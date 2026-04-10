@@ -1,4 +1,4 @@
-package controller
+package handler
 
 import (
 	"geminiApi/internal/service"
@@ -7,23 +7,23 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-type GeminiController struct {
-	routerService *service.RouterService
+type GeminiHandler struct {
+	gatewayService *service.GatewayService
 }
 
-func NewGeminiController(rs *service.RouterService) *GeminiController {
-	return &GeminiController{routerService: rs}
+func NewGeminiHandler(gs *service.GatewayService) *GeminiHandler {
+	return &GeminiHandler{gatewayService: gs}
 }
 
 // GenerateText 获取 prompt 并调用路由网关
-func (ctrl *GeminiController) GenerateText(c *gin.Context) {
+func (h *GeminiHandler) GenerateText(c *gin.Context) {
 	prompt := c.Query("prompt")
 	if prompt == "" {
 		c.JSON(http.StatusBadRequest, gin.H{"error": "prompt 不能为空"})
 		return
 	}
 
-	result, err := ctrl.routerService.GenerateText(c.Request.Context(), prompt)
+	result, err := h.gatewayService.GenerateText(c.Request.Context(), prompt)
 	if err != nil {
 		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
@@ -36,6 +36,6 @@ func (ctrl *GeminiController) GenerateText(c *gin.Context) {
 }
 
 // Ping 健康检查
-func (ctrl *GeminiController) Ping(c *gin.Context) {
+func (h *GeminiHandler) Ping(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "pong"})
 }

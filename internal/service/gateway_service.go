@@ -3,7 +3,7 @@ package service
 import (
 	"context"
 	"fmt"
-	"geminiApi/config"
+	"geminiApi/internal/config"
 	"geminiApi/internal/provider"
 	"log"
 	"sync"
@@ -17,24 +17,24 @@ type providerNode struct {
 	failCount int
 }
 
-// RouterService 管理多个 LLM 提供商，并实现负载均衡和故障转移 (熔断重试)
-type RouterService struct {
+// GatewayService 管理多个 LLM 提供商，并实现负载均衡和故障转移 (熔断重试)
+type GatewayService struct {
 	nodes   []*providerNode
 	mu      sync.Mutex
 	current int // 记录当前轮询到的索引
 }
 
-// NewRouterService 初始化路由网关
-func NewRouterService() *RouterService {
-	return &RouterService{
+// NewGatewayService 初始化路由网关
+func NewGatewayService() *GatewayService {
+	return &GatewayService{
 		nodes:   make([]*providerNode, 0),
 		current: 0,
 	}
 }
 
-// SetupRouterServiceFromConfig 根据配置初始化路由网关，自动注册所有的 Gemini API Key
-func SetupRouterServiceFromConfig(ctx context.Context, cfg *config.Config) (*RouterService, error) {
-	routerSvc := NewRouterService()
+// SetupGatewayServiceFromConfig 根据配置初始化路由网关，自动注册所有的 Gemini API Key
+func SetupGatewayServiceFromConfig(ctx context.Context, cfg *config.Config) (*GatewayService, error) {
+	gatewaySvc := NewGatewayService()
 	
 	if len(cfg.GeminiAPIKeys) == 0 {
 		return nil, fmt.Errorf("没有配置任何 Gemini API Key")
@@ -48,21 +48,21 @@ func SetupRouterServiceFromConfig(ctx context.Context, cfg *config.Config) (*Rou
 			log.Printf("[警告] 无法初始化 Provider %s: %v", providerName, err)
 			continue
 		}
-		routerSvc.AddProvider(p)
+		gatewaySvc.AddProvider(p)
 	}
 	
-	if len(routerSvc.nodes) == 0 {
+	if len(gatewaySvc.nodes) == 0 {
 		return nil, fmt.Errorf("所有 Provider 初始化均失败，请检查 API Key 配置")
 	}
 
 	// 启动后台健康检查任务
-	go routerSvc.startHealthCheckTask()
+	go gatewaySvc.startHealthCheckTask()
 
-	return routerSvc, nil
+	return gatewaySvc, nil
 }
 
 // AddProvider 注册一个新的提供商 (例如一个新的 Gemini API Key 实例)
-func (r *RouterService) AddProvider(p provider.LLMProvider) {
+func (r *GatewayService) AddProvider(p provider.LLMProvider) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.nodes = append(r.nodes, &providerNode{
@@ -70,11 +70,11 @@ func (r *RouterService) AddProvider(p provider.LLMProvider) {
 		isHealthy: true,
 		failCount: 0,
 	})
-	log.Printf("Router 注册 Provider: %s", p.GetName())
+	log.Printf("Gateway 注册 Provider: %s", p.GetName())
 }
 
 // getNextNode 获取下一个健康的提供商节点 (Round-Robin 策略)
-func (r *RouterService) getNextNode() *providerNode {
+func (r *GatewayService) getNextNode() *providerNode {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -92,14 +92,14 @@ func (r *RouterService) getNextNode() *providerNode {
 	}
 
 	// 如果所有节点都不健康，进行容错处理，返回当前节点，死马当活马医
-	log.Printf("[Router 警告] 所有节点均处于不健康状态，尝试放行请求...")
+	log.Printf("[Gateway 警告] 所有节点均处于不健康状态，尝试放行请求...")
 	node := r.nodes[r.current]
 	r.current = (r.current + 1) % totalNodes
 	return node
 }
 
 // GenerateText 带有自动重试与降级机制的请求方法
-func (r *RouterService) GenerateText(ctx context.Context, prompt string) (string, error) {
+func (r *GatewayService) GenerateText(ctx context.Context, prompt string) (string, error) {
 	if len(r.nodes) == 0 {
 		return "", fmt.Errorf("无可用的模型提供商，请检查配置")
 	}
@@ -115,7 +115,7 @@ func (r *RouterService) GenerateText(ctx context.Context, prompt string) (string
 		}
 		p := node.provider
 
-		log.Printf("--- Router 路由至: %s ---", p.GetName())
+		log.Printf("--- Gateway 路由至: %s ---", p.GetName())
 		result, err := p.GenerateText(ctx, prompt)
 		
 		if err == nil {
@@ -133,12 +133,12 @@ func (r *RouterService) GenerateText(ctx context.Context, prompt string) (string
 		// 如果连续失败达到阈值(例如 2 次)，标记为不健康
 		if node.failCount >= 2 && node.isHealthy {
 			node.isHealthy = false
-			log.Printf("[Router 熔断隔离] %s 连续失败 %d 次，已被隔离", p.GetName(), node.failCount)
+			log.Printf("[Gateway 熔断隔离] %s 连续失败 %d 次，已被隔离", p.GetName(), node.failCount)
 		}
 		r.mu.Unlock()
 
 		// 记录错误并继续下一个循环 (触发降级重试逻辑)
-		log.Printf("[Router 警告] %s 请求失败: %v, 准备切换至备用模型...", p.GetName(), err)
+		log.Printf("[Gateway 警告] %s 请求失败: %v, 准备切换至备用模型...", p.GetName(), err)
 		lastErr = err
 	}
 
@@ -147,7 +147,7 @@ func (r *RouterService) GenerateText(ctx context.Context, prompt string) (string
 }
 
 // startHealthCheckTask 后台定期检查不健康的节点，尝试将其恢复
-func (r *RouterService) startHealthCheckTask() {
+func (r *GatewayService) startHealthCheckTask() {
 	ticker := time.NewTicker(60 * time.Second) // 每 60 秒检查一次
 	defer ticker.Stop()
 
@@ -175,9 +175,9 @@ func (r *RouterService) startHealthCheckTask() {
 				// 探活成功，恢复节点
 				node.isHealthy = true
 				node.failCount = 0
-				log.Printf("[Router 探活成功] %s 已恢复，重新加入路由池", node.provider.GetName())
+				log.Printf("[Gateway 探活成功] %s 已恢复，重新加入路由池", node.provider.GetName())
 			} else {
-				log.Printf("[Router 探活失败] %s 仍未恢复: %v", node.provider.GetName(), err)
+				log.Printf("[Gateway 探活失败] %s 仍未恢复: %v", node.provider.GetName(), err)
 			}
 			r.mu.Unlock()
 		}
